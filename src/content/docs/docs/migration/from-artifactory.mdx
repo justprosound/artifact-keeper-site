@@ -107,6 +107,8 @@ curl -X POST https://registry.example.com/api/v1/migrations/$JOB_ID/start \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+`conflict_resolution` accepts `skip` (the default) or `overwrite`; any other value is treated as `skip`. Neither mode protects a released version that already exists in the target repository with different content. See [Conflict Resolution](/docs/migration/from-nexus#conflict-resolution).
+
 #### Step 4: Monitor Progress
 
 ```bash

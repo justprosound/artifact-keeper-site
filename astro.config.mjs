@@ -108,6 +108,7 @@ export default defineConfig({
             { label: 'Peer Replication', slug: 'docs/advanced/edge-nodes' },
             { label: 'WASM Plugins', slug: 'docs/advanced/plugins' },
             { label: 'Artifact Versioning', slug: 'docs/advanced/versioning' },
+            { label: 'Release Immutability', slug: 'docs/advanced/release-immutability' },
             { label: 'Lifecycle Policies', slug: 'docs/advanced/lifecycle' },
             { label: 'Image Builder', slug: 'docs/advanced/image-builder' },
             { label: 'Webhooks', items: [

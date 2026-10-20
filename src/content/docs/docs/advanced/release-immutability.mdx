@@ -1,0 +1,86 @@
+---
+title: "Release Immutability"
+description: "Which uploads, re-uploads and deletes Artifact Keeper refuses today, and where released content can still change"
+---
+
+Artifact Keeper refuses to replace a stored release with different bytes on its main upload paths. The rules below are always on: there is no repository setting or environment variable that turns them on or off. This page describes what the server does today, including the paths where the rules do not apply yet.
+
+## The rules
+
+### 1. A stored path cannot be uploaded again
+
+Uploading to a path that already holds a live artifact returns **HTTP 409 Conflict** and keeps the stored file. This holds even when the new bytes are identical. Each format words the response its own way, for example:
+
+| Format | Response to a second upload of the same path |
+|--------|----------------------------------------------|
+| Generic (`PUT /api/v1/repositories/{key}/artifacts/{path}`) | `409`, `{"code": "CONFLICT", "message": "Artifact version already exists and is immutable"}` |
+| Maven release (any file outside a `-SNAPSHOT` directory, except `maven-metadata.xml`) | `409`, `Artifact already exists` |
+| Debian, RPM, Alpine package files | `409`, `Package already exists` |
+
+The exceptions are files a format rewrites in place by design. They are listed under [What stays mutable](#what-stays-mutable).
+
+### 2. A deleted release cannot be replaced with different bytes
+
+Deleting an artifact leaves a tombstone (it moves to the trash). While the tombstone exists, uploading **different** bytes to a *released* coordinate returns `409` with `Artifact version already exists and is immutable`. Uploading the **identical** bytes again is allowed and restores the artifact.
+
+A coordinate counts as released when either of these holds:
+
+- the stored artifact carried a version. On the generic upload API the version is the second segment of a path with at least three segments (`builds/v1.0.0/output.tar.gz` has version `v1.0.0`; `builds/output.tar.gz` has none);
+- the format marks the path as a release file, for example a Maven release artifact, a PyPI wheel or sdist, an npm tarball, a Cargo `.crate` or a conda package.
+
+A generic path with fewer than three segments has no version, so after a delete it can be uploaded again with different bytes.
+
+This check runs on the generic upload API (single request, multipart and chunked) and on the native uploads for Maven, npm, PyPI, NuGet, Cargo, Composer, conda and Bazel. Other formats do not run it yet; see [Known gaps](#known-gaps).
+
+The tombstone does not last forever. Once storage garbage collection reclaims it, the coordinate can be uploaded again with any bytes:
+
+- the trash keeps a deleted artifact for `GC_TRASH_RETENTION_DAYS` (default `0`: reclaimable on the next GC pass, which runs hourly by default; see [Environment Variables](/docs/reference/environment#scheduled-tasks));
+- an administrator can delete with `DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true`, which purges the tombstone at once so the path can be reused. This is not available for OCI repositories. *(Added after v1.11.3; on v1.11.3 and earlier the query parameter is ignored and the tombstone stays.)*
+
+### 3. A release file can only be deleted by an administrator
+
+`DELETE /api/v1/repositories/{key}/artifacts/{path}` returns `409` with `Cannot delete an immutable/released artifact` when the caller is not an administrator and the path is a release file of its format: for example a Maven release artifact, a PyPI wheel or sdist, an npm tarball, a Cargo `.crate`, a conda package, a Debian `pool/` file, an RPM package, or an OCI blob or manifest addressed by digest. Trusted replication peers (an administrator or service-account token) are exempt so that upstream deletes can be mirrored.
+
+Generic, NuGet, Helm and Composer paths are not release files in this sense, so anyone with the `delete` permission on the repository can delete them. Rule 2 still stops a deleted generic artifact whose path carries a version from being replaced with different bytes.
+
+## What stays mutable
+
+These are rewritten in place by design and are not covered by the rules above:
+
+- **Maven snapshots**: every file under a `-SNAPSHOT` directory, and `maven-metadata.xml` and its checksums. See [Snapshot vs Release Repositories](/docs/guides/maven#snapshot-vs-release-repositories).
+- **Index files**: the npm packument, the PyPI simple index, Cargo index entries, Debian `dists/` files, RPM `repomd.xml`, conda `repodata.json`.
+- **OCI tags**: pushing a manifest to an existing tag moves the tag to the new manifest. Manifests and blobs addressed by digest never change. See [Docker tags](/docs/guides/docker#tags-are-mutable).
+- **Conan**: recipe and package files can be re-uploaded within a revision.
+- **Generic and ML-model repositories with [artifact versioning](/docs/advanced/versioning)** enabled: a re-upload appends a new revision instead of being refused.
+
+## Known gaps
+
+The rules are enforced on the paths named above. These paths can still change released content today:
+
+- **Migration** with `conflict_resolution: "overwrite"` (or `"rename"`, which currently behaves the same way) replaces existing artifacts in the target repository without the checks above. See [Migrating from Nexus](/docs/migration/from-nexus#configuration-options).
+- **Promotion and approval** clear a tombstone at the target path without checking that the bytes match.
+- **Native uploads for the other formats** (among them Debian, RPM, Alpine, Helm, Go, Terraform and Swift) clear a tombstone before storing the new file without rule 2, so a deleted artifact can be re-uploaded with different bytes. Rule 1 still refuses an upload while the file is stored.
+- **Format-native deletes** (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove) do not apply rule 3.
+
+## How this is tested
+
+Each rule is pinned by database-backed tests in the backend repository, which run in its CI:
+
+| Rule | Backend test |
+|------|--------------|
+| Generic re-upload refused, and different bytes after a delete refused | `versioning_flag_off_keeps_release_immutability_db`, `delete_then_reupload_different_bytes_blocked_db` (`backend/src/services/artifact_service.rs`, `backend/src/api/handlers/repositories.rs`) |
+| Identical bytes after a delete allowed; mutable index files replaceable | `delete_then_reupload_legit_flows_allowed_db`, `checked_cleanup_allows_identical_bytes_republish`, `checked_cleanup_allows_mutable_path_swap` |
+| Version-less generic path replaceable after a delete | `github_shaped_generic_tombstone_allows_replacement` (`backend/src/api/handlers/mod.rs`) |
+| Admin `?permanent=true` frees the path | `permanent_delete_allows_reupload_of_different_bytes_db` |
+| Chunked upload refuses an occupied path | `complete_refuses_to_overwrite_an_occupied_immutable_path`, `complete_refuses_an_identical_republish_of_an_occupied_path` (`backend/src/api/handlers/upload.rs`) |
+| Maven release redeploy refused, snapshots republishable | `test_maven_put_takes_snapshot_mutability_from_classifier_3839`, `test_maven_redeploy_of_a_unique_snapshot_artifact_is_accepted_4476` (`backend/src/api/handlers/maven.rs`) |
+| Release-file delete is admin-only | `test_delete_blocked_by_immutability_matches_classification` |
+| OCI tag moves on re-push | `digest_pull_and_delete_survive_tag_overwrite` (`backend/src/api/handlers/oci_v2.rs`) |
+
+The end-to-end release gate does not yet assert any of these rules against a deployed server; its Debian, RPM and Alpine scripts accept a `409` on re-upload but do not require one.
+
+## See Also
+
+- [Artifact Versioning](/docs/advanced/versioning): keep every revision of a generic or ML-model path instead of refusing re-uploads
+- [Staging & Promotion](/docs/advanced/staging-promotion): `promotion_only` release repositories
+- [Lifecycle Policies](/docs/advanced/lifecycle): retention and cleanup

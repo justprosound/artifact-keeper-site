@@ -10,7 +10,7 @@ The examples use `localhost:30080`, the HTTP port Caddy serves in the stock Dock
 :::
 
 :::caution[Package files are write-once]
-Each package file name can be uploaded to a repository once. Uploading the same file name again returns **HTTP 409 Conflict** and the stored file is kept, even if the new bytes differ. To ship a change, bump the version or release (for example `-1` to `-2` for RPM, `-r0` to `-r1` for Alpine) rather than re-uploading. Rebuilt packages are generally not byte-identical (rpmbuild output, for instance, is not reproducible by default), so a rebuilt "same" package is a different file.
+While a package file is stored in a repository, uploading the same file name again returns **HTTP 409 Conflict** and the stored file is kept, even if the new bytes differ. Package files in `pool/` (Debian) and RPM packages can only be deleted by an administrator; see [Release Immutability](/docs/advanced/release-immutability). To ship a change, bump the version or release (for example `-1` to `-2` for RPM, `-r0` to `-r1` for Alpine) rather than re-uploading. Rebuilt packages are generally not byte-identical (rpmbuild output, for instance, is not reproducible by default), so a rebuilt "same" package is a different file.
 :::
 
 :::note[The `ak` CLI]
@@ -472,7 +472,7 @@ publish:deb:
     - main
 ```
 
-Because package files are write-once, a pipeline that re-runs on the same version gets HTTP 409 from the upload. Bump the package version or release for each build that should be published.
+Because a stored package file cannot be uploaded again, a pipeline that re-runs on the same version gets HTTP 409 from the upload. Bump the package version or release for each build that should be published.
 
 ### Jenkins Pipeline Example
 

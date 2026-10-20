@@ -243,7 +243,7 @@ Two authentication modes are supported. If `AZURE_STORAGE_ACCESS_KEY` is set, th
 
 ## Lifecycle Policies (Garbage Collection)
 
-Artifact cleanup is managed through **lifecycle policies**, not environment variables. There is no `GC_RETENTION_DAYS` or similar setting. Policies are created and managed via the Admin API or the web UI, and execute automatically every 6 hours.
+Which artifacts get deleted is decided by **lifecycle policies**, not environment variables; there is no `GC_RETENTION_DAYS` setting. Policies are created and managed via the Admin API or the web UI, and execute automatically every 6 hours. How long a deleted artifact then stays in the trash before storage garbage collection reclaims it is set by `GC_TRASH_RETENTION_DAYS` (see [Scheduled Tasks](#scheduled-tasks)).
 
 See the dedicated [Lifecycle Policies](/docs/advanced/lifecycle) page for full documentation, including policy types, configuration examples, dry-run previews, and scheduling details.
 
@@ -380,6 +380,7 @@ There is no `CACHE_TTL_SECONDS` environment variable. The **remote/proxy reposit
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GC_SCHEDULE` | No | `0 0 * * * *` | Cron schedule for storage garbage collection (6-field: sec min hour day month weekday). Default: hourly. |
+| `GC_TRASH_RETENTION_DAYS` | No | `0` | Days a deleted artifact stays in the trash, restorable by an administrator, before storage GC may reclaim it (clamped to 0 to 3650). `0` makes it reclaimable on the next GC pass. While a deleted artifact is in the trash, its path cannot be re-uploaded with different bytes if it is a released coordinate; see [Release Immutability](/docs/advanced/release-immutability). |
 | `BLOB_GC_ENABLED` | No | `false` | Opt in to live blob deletion during the GC pass. When `false` (default) the pass dry-runs and only logs what it would remove. |
 | `LIFECYCLE_CHECK_INTERVAL_SECS` | No | `60` | How often (in seconds) the lifecycle scheduler checks for due policies |
 

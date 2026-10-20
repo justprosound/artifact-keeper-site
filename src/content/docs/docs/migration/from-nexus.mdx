@@ -194,12 +194,21 @@ If a migration is interrupted (network failure, server restart), restarting it w
 | Option | Default | Description |
 |--------|---------|-------------|
 | `include_repos` | all hosted | List of repository names to migrate |
-| `conflict_resolution` | `skip` | What to do when an artifact already exists: `skip`, `overwrite`, or `fail` |
+| `conflict_resolution` | `skip` | What to do when an artifact already exists at the target path: `skip` or `overwrite`. See [Conflict Resolution](#conflict-resolution) |
 | `concurrent_transfers` | 4 | Number of parallel artifact downloads |
 | `throttle_delay_ms` | 100 | Delay between requests to avoid overloading Nexus |
 | `verify_checksums` | true | Verify SHA256/SHA1/MD5 after transfer |
 
 For large Nexus instances, you may want to increase `concurrent_transfers` and decrease `throttle_delay_ms`, but be mindful of Nexus server load.
+
+### Conflict Resolution
+
+- `skip` (default) leaves an existing artifact in place when its checksum matches the source. If the source declares no checksum, an artifact at the same path counts as a match. An existing artifact whose checksum **differs** from the source is not skipped: the source copy replaces it.
+- `overwrite` re-imports every artifact and replaces the existing one at the same path.
+
+The [release-immutability rules](/docs/advanced/release-immutability) are not applied to migration writes, so under either mode a migration can replace a released version in the target repository. Migrate into empty repositories, or into ones whose contents you are prepared to have replaced by the source.
+- `rename` is accepted but currently behaves like `overwrite`; it does not write a renamed copy.
+- Any other value, including `fail`, is treated as `skip`. There is no mode that stops the job on a conflict.
 
 ### Renaming Repositories During Import
 
