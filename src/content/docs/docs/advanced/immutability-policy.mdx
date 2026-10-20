@@ -1,0 +1,72 @@
+---
+title: "Immutability Policy (Planned)"
+description: "Planned per-repository release-immutability policy: protected releases, exclusion patterns, OCI tag immutability and an audited admin override"
+---
+
+:::caution[Planned feature]
+This page describes a feature that is being designed and is not in any release yet. Setting names, endpoints and error codes are proposals and will change before release. For what the server enforces today, see [Release Immutability](/docs/advanced/release-immutability).
+:::
+
+The [always-on rules](/docs/advanced/release-immutability) stop a stored file from being uploaded again, but they do not hold on every write path, and OCI tags are not covered at all. The immutability policy is a per-repository setting that makes "a released version never changes" hold on every path that can write to the repository.
+
+## Turning it on
+
+The policy is **off by default**. With it off, a repository behaves exactly as it does today, and the always-on rules still apply. A repository administrator turns it on per repository. The proposed field is `release_immutability` (`off` or `on`) on the repository create and update requests.
+
+Virtual repositories apply the policy of the hosted member they deploy to. Remote (proxy) repositories ignore it.
+
+## What a protected release means
+
+With the policy on, a release is protected per file path: each stored file of a release is protected individually. A PyPI version with several wheels, or a Conan revision with several files, is therefore protected one file at a time.
+
+A protected file cannot be changed by any of these:
+
+- a native publish or a generic upload, including after a delete;
+- a delete through the REST API or a format-native delete (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove);
+- promotion or approval into the repository;
+- a migration import, whatever its `conflict_resolution`;
+- a lifecycle or retention policy.
+
+A refusal returns `409` with one stable error code across formats, and writes an audit event. Each format still wraps the error in its own shape; OCI clients, for example, get an OCI `DENIED` error.
+
+## Exclusions
+
+Some files must stay mutable even in a protected repository. Exclusions are glob patterns over the version or tag (proposed field: `immutability_exclusions`). Files matching an exclusion are not protected.
+
+These stay mutable without an exclusion:
+
+- Maven `-SNAPSHOT` versions and `maven-metadata.xml`;
+- format index files (npm packument, PyPI simple index, Cargo index, Debian `dists/`, RPM `repomd.xml`, conda `repodata.json`);
+- cosign `.sig` and `.att` tags and OCI referrers.
+
+Exclusions do not make npm or PyPI prereleases mutable by default.
+
+## OCI tag immutability
+
+With the policy on, a tag that is not excluded is protected:
+
+- pushing a different manifest to an existing tag is refused; re-pushing the same digest succeeds and changes nothing;
+- deleting a protected tag is refused;
+- deleting a manifest by digest is refused while any protected tag points at it. Other, unprotected tags on the same digest stay deletable.
+
+Exclude moving tags such as `latest` or `main` with a pattern if your pipelines rely on them.
+
+## Administrator override
+
+A repository administrator or a system administrator can override the policy for a single request, for example to retract a release that must not stay published. The override:
+
+- must be requested explicitly on the request;
+- requires a reason;
+- is recorded as an audit event and sent as a webhook.
+
+To stop a release from being downloaded without changing its bytes, block it instead of overriding: see [Release Blocklist](/docs/advanced/release-blocklist).
+
+## Lifecycle and retention
+
+Immutability takes precedence over lifecycle policies. Retention skips protected releases, and a dry run lists the protected releases it skipped.
+
+## See Also
+
+- [Release Immutability](/docs/advanced/release-immutability): the rules enforced today
+- [Release Blocklist](/docs/advanced/release-blocklist): revoke a release without changing it
+- [Lifecycle Policies](/docs/advanced/lifecycle)
