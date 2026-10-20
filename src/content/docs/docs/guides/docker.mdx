@@ -141,17 +141,24 @@ docker tag myapp:latest localhost:30080/docker-local/myapp:1.2.3
 docker push localhost:30080/docker-local/myapp:1.2.3
 ```
 
-### Immutable Tags
+### Tags Are Mutable
 
-Avoid overwriting existing tags. Use unique version tags for each build:
+Artifact Keeper does not enforce tag immutability. Pushing to an existing tag moves the tag to the new manifest, and pulls of that tag get the new image from then on. Manifests and layers addressed by digest never change, and the previous manifest stays pullable by its digest after the tag moves.
+
+Use a unique tag for each build, and pin deployments by digest when they must not change:
 
 ```bash
-# Good: unique version
+# Unique tag per build
 docker push localhost:30080/docker-local/myapp:1.2.3-build.42
 
-# Avoid: reusing same tag
-docker push localhost:30080/docker-local/myapp:latest  # overwrites previous latest
+# Reusing a tag moves it to the new image
+docker push localhost:30080/docker-local/myapp:latest
+
+# Pin by digest
+docker pull localhost:30080/docker-local/myapp@sha256:<digest>
 ```
+
+See [Release Immutability](/docs/advanced/release-immutability) for what the server does enforce.
 
 ### Layer Caching
 

@@ -7,7 +7,7 @@ Artifact Keeper provides opt-in first-class versioning for **generic** and **mlm
 
 ## When to Use It
 
-Native formats carry their version in the artifact coordinate (`my-lib@1.2.3`, `image:tag`), so they already have immutable, addressable history. Generic file storage and generic ML-model storage do not — historically a second upload to the same path overwrote the first. First-class versioning fills that gap for the two formats that need it:
+Native formats carry their version in the artifact coordinate (`my-lib@1.2.3`, `image:tag`), so they already have immutable, addressable history. Generic file storage and generic ML-model storage do not: without versioning, a second upload to the same path is refused with `409`, so a changed file has to go to a new path. First-class versioning fills that gap for the two formats that need it:
 
 - **Generic** repositories — arbitrary build outputs, datasets, blobs
 - **ML-model (mlmodel)** repositories — model weights and artifacts stored via the generic ML-model endpoint
@@ -34,9 +34,9 @@ curl -X POST \
 The flag defaults off, so existing repositories and existing single-copy artifacts are completely unaffected until you opt in. Enabling it changes behavior only for future uploads to generic/mlmodel repositories.
 :::
 
-## Append-Revision vs Overwrite Semantics
+## Append-Revision vs Write-Once Semantics
 
-With versioning **disabled** (the default), a re-upload to an existing path overwrites in place — the previous bytes are replaced.
+With versioning **disabled** (the default), a re-upload to an existing path is refused with **HTTP 409** and the stored bytes are kept, even when the new bytes are identical. After a delete, a path with three or more segments (which carries a version) cannot be re-uploaded with different bytes either. See [Release Immutability](/docs/advanced/release-immutability) for the full rules.
 
 With versioning **enabled** on a generic or mlmodel repository, a re-upload to an existing path **appends an immutable revision**:
 
@@ -124,7 +124,7 @@ The selector is ignored on repositories without versioning enabled, so it is saf
 
 ## Relationship to Release Immutability
 
-First-class versioning is complementary to — and independent of — the release-immutability control. Release immutability prevents a released coordinate from being swapped (a delete-and-re-upload of different bytes to the same coordinate). Versioning changes what a re-upload *does* on opted-in generic/mlmodel repositories: it appends a new revision rather than mutating in place. Because versioning is gated behind the opt-in flag and applies only to generic/mlmodel formats, the release-immutability backstop and all other formats keep their existing behavior.
+The [release-immutability rules](/docs/advanced/release-immutability) are always on and have no setting. Without versioning they refuse a re-upload to a stored path, and refuse different bytes at a deleted path that carried a version. Versioning replaces that refusal on opted-in generic and mlmodel repositories: a re-upload appends a new revision, and earlier revisions stay immutable and addressable. Repositories without the flag, and every other format, keep the release-immutability rules unchanged.
 
 ## Version History in the Web UI
 
@@ -132,6 +132,7 @@ Versioned artifacts surface a version-history view in the web console: each revi
 
 ## See Also
 
+- [Release Immutability](/docs/advanced/release-immutability) — what is refused without versioning
 - [More Formats](/docs/guides/more-formats) — generic file storage and generic ML-model endpoints
 - [Remote & Virtual Repositories](/docs/advanced/remote-virtual) — repository types and layout
 - [Staging & Promotion](/docs/advanced/staging-promotion) — promotion workflows and release gates

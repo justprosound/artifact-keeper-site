@@ -544,7 +544,12 @@ Store any file type at an arbitrary path through the repository REST API.
 Uploads need a token or basic auth with the `write:artifacts` scope. Downloads are anonymous on public repositories and need `read:artifacts` otherwise.
 
 :::caution[Paths are write-once]
-Uploading to a path that already holds an artifact returns **HTTP 409** (`Artifact version already exists and is immutable`); nothing is overwritten. To replace a file, delete it first with `DELETE /api/v1/repositories/{key}/artifacts/{path}`, which needs the `delete:artifacts` scope (a token with only `read:artifacts,write:artifacts` gets 403). Alternatively, enable [artifact versioning](/docs/advanced/versioning) on the repository (`versioning_enabled`): each upload to a path then appends an immutable revision, with a `?version=<rev|label>` selector for retrieving any prior revision.
+Uploading to a path that already holds an artifact returns **HTTP 409** with the code `IMMUTABLE_RELEASE` (`Artifact version already exists and is immutable`), even with identical bytes; nothing is overwritten. Deleting first does not always free the path. `DELETE /api/v1/repositories/{key}/artifacts/{path}` needs the `delete:artifacts` scope (a token with only `read:artifacts,write:artifacts` gets 403), and after it:
+
+- a path with three or more segments, such as `builds/v1.0.0/output.tar.gz`, carries a version (`v1.0.0`), so uploading **different** bytes there is refused with the same 409, also after storage garbage collection has reclaimed the deleted artifact. Re-uploading the identical bytes is allowed, and only an administrator's permanent delete frees the path ([Reopening a coordinate on purpose](/docs/advanced/release-immutability#reopening-a-coordinate-on-purpose)) *(changed after v1.11.3: earlier releases answer with the code `CONFLICT`, and garbage collection frees the path)*;
+- a path with one or two segments, such as `builds/output.tar.gz`, has no version and can be uploaded again with any bytes.
+
+See [Release Immutability](/docs/advanced/release-immutability) for the full rules. To keep every upload to a path instead, enable [artifact versioning](/docs/advanced/versioning) on the repository (`versioning_enabled`): each upload then appends an immutable revision, with a `?version=<rev|label>` selector for retrieving any prior revision.
 :::
 
 :::note

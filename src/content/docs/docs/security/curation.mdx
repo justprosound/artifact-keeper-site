@@ -257,7 +257,7 @@ curl -X POST "https://artifacts.example.com/api/v1/curation/repos/{repo_key}/ver
 }
 ```
 
-A published version is served under `/rpm/{key}/@N/` and cannot be republished (a second publish attempt on the same version number returns `409 Conflict`). Both endpoints require the same authorization as the manual sync trigger: admin, or an API token with `trigger:sync`, plus tenant ownership of the repository.
+A published version is served under `/rpm/{key}/@N/` and cannot be republished (a second publish attempt on the same version number returns `409` with the code `IMMUTABLE_RELEASE`; `CONFLICT` on v1.11.3 and earlier). Both endpoints require the same authorization as the manual sync trigger: admin, or an API token with `trigger:sync`, plus tenant ownership of the repository.
 
 ## See Also
 

@@ -330,6 +330,28 @@ Download an artifact by its path within a repository. `HEAD` is supported and re
 
 **Errors:** `403` with `error: scan_on_proxy_route_required` when the file is a proxied package of a scan-on-proxy enforced format in a Remote or Virtual repository, which must be downloaded through the format's own route; `404` when the path is unknown; `503` when the repository's scan-on-proxy configuration cannot be read.
 
+### PUT /repositories/:key/artifacts/:path
+
+Upload a file to a path in a repository. The body is the raw file content; set `Content-Type` to the type that should be served on download. A multipart `POST` to the same URL is also accepted.
+
+**Auth:** requires the `write:artifacts` scope and write access to the repository.
+
+**Response:** `201 Created` with the stored artifact's metadata.
+
+**Errors:** `400` for an invalid path or a virtual repository; `403` without write access; `404` when the key is unknown; `405` for a remote repository; `409` with the code `IMMUTABLE_RELEASE` (`Artifact version already exists and is immutable`) when the path already holds an artifact (even with identical bytes), or when it held a released artifact that was deleted, or reclaimed by storage GC, and the new bytes differ. *(Changed after v1.11.3: earlier releases answer with the code `CONFLICT`, and accept different bytes once storage GC has reclaimed the deleted artifact.)* On a generic or mlmodel repository with [`versioning_enabled`](/docs/advanced/versioning) a re-upload appends a revision instead. See [Release Immutability](/docs/advanced/release-immutability).
+
+### DELETE /repositories/:key/artifacts/:path
+
+Delete an artifact. The artifact moves to the trash, where an administrator can restore it until storage GC reclaims it (`GC_TRASH_RETENTION_DAYS`).
+
+**Auth:** requires the `delete:artifacts` scope and the `delete` action on the repository.
+
+**Query:** `permanent=true` (administrators only) also purges the artifact from the trash, so its path can be re-uploaded at once, with any bytes. Not available for OCI repositories. *(Added after v1.11.3.)*
+
+**Response:** `200 OK`.
+
+**Errors:** `403` for `permanent=true` without admin, or for a direct delete in a `promotion_only` repository; `404` when the artifact does not exist; `409` with the code `IMMUTABLE_RELEASE` (`Cannot delete an immutable/released artifact`) when a non-administrator deletes a release file (for example a Maven release artifact or an RPM package); `409` with the code `CONFLICT` for `permanent=true` on an OCI repository.
+
 ---
 
 ## Artifact Versioning Endpoints
