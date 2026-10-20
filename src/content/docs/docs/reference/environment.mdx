@@ -380,7 +380,7 @@ There is no `CACHE_TTL_SECONDS` environment variable. The **remote/proxy reposit
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `GC_SCHEDULE` | No | `0 0 * * * *` | Cron schedule for storage garbage collection (6-field: sec min hour day month weekday). Default: hourly. |
-| `GC_TRASH_RETENTION_DAYS` | No | `0` | Days a deleted artifact stays in the trash, restorable by an administrator, before storage GC may reclaim it (clamped to 0 to 3650). `0` makes it reclaimable on the next GC pass. This is also the window in which an administrator can permanently delete a released artifact to reuse its path for different bytes: once GC reclaims it, the coordinate stays closed to different bytes *(changed after v1.11.3)*; see [Release Immutability](/docs/advanced/release-immutability#reopening-a-coordinate-on-purpose). |
+| `GC_TRASH_RETENTION_DAYS` | No | `0` | Days a deleted artifact stays in the trash, restorable by an administrator, before storage GC may reclaim it (clamped to 0 to 3650). `0` makes it reclaimable on the next GC pass. This is also the window in which an administrator can permanently delete a released artifact from the trash to reuse its path for different bytes. Once GC reclaims it, different bytes stay refused at that path, and reopening it needs the original bytes *(changed after v1.11.3)*; see [Release Immutability](/docs/advanced/release-immutability#reopening-a-coordinate-on-purpose). |
 | `BLOB_GC_ENABLED` | No | `false` | Opt in to live blob deletion during the GC pass. When `false` (default) the pass dry-runs and only logs what it would remove. |
 | `LIFECYCLE_CHECK_INTERVAL_SECS` | No | `60` | How often (in seconds) the lifecycle scheduler checks for due policies |
 

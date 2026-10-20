@@ -18,7 +18,7 @@ This page describes the server after the release-immutability fixes that follow 
 
 Every refusal on this page answers **HTTP 409** with the stable error code `IMMUTABLE_RELEASE`. Match on the code, not on the message text: messages differ between formats and may be reworded.
 
-On the REST API and on the native API of every format except the three below, the body is the standard error object:
+On the REST API and on the native format APIs, the body is the standard error object:
 
 ```json
 {"code": "IMMUTABLE_RELEASE", "message": "Artifact version already exists and is immutable"}
@@ -31,6 +31,8 @@ Cargo, Dart pub and Swift clients parse their own error envelope, so the code is
 | Cargo | `errors[0].code` | `errors[0].detail` |
 | Dart pub | `error.code` | `error.message` |
 | Swift (`application/problem+json`) | `code` | `detail` |
+
+One refusal does not carry the code yet: a second upload of a file that the PyPI upload API already stores answers `409` with the code `CONFLICT` (`File already exists`). Different bytes over a deleted PyPI file do carry `IMMUTABLE_RELEASE`.
 
 Other 409 responses keep the code `CONFLICT` and are not immutability refusals: a download of an artifact held in quarantine, `?permanent=true` on an OCI repository, a repository key that is already taken, and so on.
 
@@ -82,15 +84,15 @@ Coordinates that garbage collection reclaimed before the server was upgraded to 
 
 #### Reopening a coordinate on purpose
 
-An administrator can reopen a deleted release for different bytes, but only **before** storage garbage collection reclaims it. Either of these removes the tombstone, and any record, at once:
+Only an administrator can reopen a released coordinate for different bytes, by permanently deleting it. Either of these removes the deleted artifact, and any garbage collection record for its path, at once:
 
 - `DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true`, which deletes and purges in one request (not available for OCI repositories);
 - `DELETE /api/v1/admin/trash/{id}` for an artifact that is already in the trash (`GET /api/v1/admin/trash` lists it).
 
-After garbage collection has reclaimed the coordinate, there is no way to reopen it.
+Once garbage collection has reclaimed a deleted release, there is nothing left in the trash to delete permanently. To reopen the coordinate then, the administrator must first upload the **identical** bytes again (which rule 2 accepts), and then permanently delete that artifact. Without a copy of the original bytes, the coordinate cannot be reopened.
 
 :::caution[The window can be short]
-With the defaults (`GC_TRASH_RETENTION_DAYS=0` and an hourly `GC_SCHEDULE`), a deleted artifact is reclaimable on the next garbage collection pass, so an administrator may have less than an hour to permanently delete a release before its coordinate is closed for good. Set `GC_TRASH_RETENTION_DAYS` to the number of days your administrators need.
+With the defaults (`GC_TRASH_RETENTION_DAYS=0` and an hourly `GC_SCHEDULE`), a deleted artifact is reclaimable on the next garbage collection pass, so an administrator may have less than an hour to permanently delete a release from the trash. After that, reopening its coordinate needs a copy of the original bytes. Set `GC_TRASH_RETENTION_DAYS` to the number of days your administrators need.
 :::
 
 ### 3. A release file can only be deleted by an administrator
@@ -127,6 +129,7 @@ The rules are enforced on the paths named above. These paths can still change re
 - **Promotion onto a coordinate that garbage collection has already reclaimed** is not checked against the garbage collection record; promotion checks only a deleted artifact that is still in the trash.
 - **Migration of OCI images** (manifests and tags) does not apply rule 2.
 - **Format-native deletes** (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove) do not apply rule 3.
+- **The PyPI upload API** answers a second upload of a stored file with the code `CONFLICT` instead of `IMMUTABLE_RELEASE` (see [the error code](#the-immutable_release-error-code)).
 
 ## How this is tested
 
