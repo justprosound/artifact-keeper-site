@@ -1,72 +1,118 @@
 ---
 title: "Immutability Policy (Planned)"
-description: "Planned per-repository release-immutability policy: protected releases, exclusion patterns, OCI tag immutability and an audited admin override"
+description: "Planned per-repository release immutability policy: every stored file path immutable, exclusion patterns, and what later releases add"
 ---
 
 :::caution[Planned feature]
-This page describes a feature that is being designed and is not in any release yet. Setting names, endpoints and error codes are proposals and will change before release. For what the server enforces today, see [Release Immutability](/docs/advanced/release-immutability).
+This page describes a feature that is being built and is not in any release yet. The field names and behaviour below follow the implementation in progress and can still change before release. For what the server enforces today, see [Release Immutability](/docs/advanced/release-immutability).
 :::
 
-The [always-on rules](/docs/advanced/release-immutability) stop a stored file from being uploaded again, but they do not hold on every write path, and OCI tags are not covered at all. The immutability policy is a per-repository setting that makes "a released version never changes" hold on every path that can write to the repository.
+The [always-on rules](/docs/advanced/release-immutability) protect a *released* coordinate: a path that carries a version, or a release file of its format. Other paths stay replaceable after a delete, for example a version-less generic blob such as `builds/output.tar.gz`. The immutability policy is a per-repository setting that closes this: with it on, **every stored file path** in the repository is immutable, whether or not it carries a version.
+
+## What the policy does
+
+With the policy `on`, different bytes can never replace the bytes stored at a path, whether the earlier artifact is live, in the trash, or already reclaimed by storage garbage collection. Uploading the identical bytes over a deleted artifact still succeeds, so an undelete keeps working. A second upload to a live path is refused as it is today, even with identical bytes.
+
+The policy is matched **per file path**. A PyPI version with several wheels, or a Maven version with a jar, a POM and their checksums, is protected one file at a time.
+
+A refusal is the same `409` with the code [`IMMUTABLE_RELEASE`](/docs/advanced/release-immutability#the-immutable_release-error-code) that the always-on rules return.
+
+With the policy `off` (the default), a repository behaves exactly as it does without it. The always-on rules apply either way.
+
+### Where it applies
+
+In the first release, the policy is enforced by the server's shared upload check. That covers the generic upload API (`PUT /api/v1/repositories/{key}/artifacts/{path}`, multipart and chunked uploads) and the native uploads that store through it, such as PyPI. Native uploads with their own write path, among them Maven, npm, Cargo and Helm, keep the always-on rules but do not consult the policy yet. Neither do promotion, migration, deletes and lifecycle policies; see [Not in the first release](#not-in-the-first-release).
 
 ## Turning it on
 
-The policy is **off by default**. With it off, a repository behaves exactly as it does today, and the always-on rules still apply. A repository administrator turns it on per repository. The proposed field is `release_immutability` (`off` or `on`) on the repository create and update requests.
+Two fields on the repository create (`POST /api/v1/repositories`) and update (`PATCH /api/v1/repositories/{key}`) requests control the policy:
 
-Virtual repositories apply the policy of the hosted member they deploy to. Remote (proxy) repositories ignore it.
+| Field | Values | Default |
+|-------|--------|---------|
+| `release_immutability` | `off` or `on` | `off` |
+| `immutability_exclusions` | list of exclusion patterns (see [Exclusions](#exclusions)) | `[]` |
 
-## What a protected release means
+```bash
+curl -X PATCH https://registry.example.com/api/v1/repositories/releases \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "release_immutability": "on",
+    "immutability_exclusions": ["latest", "nightly", "*-SNAPSHOT"]
+  }'
+```
 
-With the policy on, a release is protected per file path: each stored file of a release is protected individually. A PyPI version with several wheels, or a Conan revision with several files, is therefore protected one file at a time.
+Both fields are always present on the repository response, on `GET` and in the repository list. On update, an omitted field is left unchanged, and `"immutability_exclusions": []` clears the list.
 
-A protected file cannot be changed by any of these:
+- **Repository types.** Only `local` and `staging` repositories take the policy. Remote and virtual repositories accept only the defaults; any other value is refused with `400`. A publish through a virtual repository lands in one of its hosted members, and that member's policy applies.
+- **Versioning.** The policy cannot be on while [`versioning_enabled`](/docs/advanced/versioning) is true, because versioning replaces the content at a path by design. Asking for both is refused with `400`.
+- **Permission.** Changing the policy takes the repository `admin` action, like every repository update.
+- **Audit.** A create or update that sets the policy adds `release_immutability_change` to the `REPOSITORY_CREATED` or `REPOSITORY_UPDATED` [audit entry](/docs/security/audit-log): the mode and exclusions before and after, and `loosened: true` when the change switches the policy off or adds an exclusion while it is on.
 
-- a native publish or a generic upload, including after a delete;
-- a delete through the REST API or a format-native delete (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove);
-- promotion or approval into the repository;
-- a migration import, whatever its `conflict_resolution`;
-- a lifecycle or retention policy.
+## What stays mutable
 
-A refusal returns `409` with one stable error code across formats, and writes an audit event. Each format still wraps the error in its own shape; OCI clients, for example, get an OCI `DENIED` error.
+The policy never protects files a format rewrites in place by design:
+
+- Maven, Gradle and sbt: every file under a `-SNAPSHOT/` version directory, and `maven-metadata.xml` and its checksums. Any other file under a release version is protected, including a file type the server does not recognise;
+- index files: the npm packument, the PyPI simple index, Cargo index entries, Debian `dists/` files, RPM `repomd.xml`, conda `repodata.json`.
+
+Conan repositories are not covered by the policy yet.
+
+npm and PyPI prereleases are protected like any other version. Exempt them with an exclusion if your workflow republishes them.
 
 ## Exclusions
 
-Some files must stay mutable even in a protected repository. Exclusions are glob patterns over the version or tag (proposed field: `immutability_exclusions`). Files matching an exclusion are not protected.
+`immutability_exclusions` lists patterns for paths that stay replaceable in a protected repository. A path is exempt when **any** of its `/`-separated segments, the file name included, matches a pattern:
 
-These stay mutable without an exclusion:
+| Pattern | Exempts | Does not exempt |
+|---------|---------|-----------------|
+| `nightly` | `app/nightly/app.tgz` | `app/nightly-2/app.tgz` |
+| `latest` | `app/latest/app.tgz` | `app/1.0/latest.tgz` |
+| `*-SNAPSHOT` | `org/x/1.0-SNAPSHOT/x.jar` | `org/x/1.0/x.jar` |
 
-- Maven `-SNAPSHOT` versions and `maven-metadata.xml`;
-- format index files (npm packument, PyPI simple index, Cargo index, Debian `dists/`, RPM `repomd.xml`, conda `repodata.json`);
-- cosign `.sig` and `.att` tags and OCI referrers.
+- `*` is the only wildcard, and matching is case-sensitive.
+- A pattern matches one segment, so it cannot contain `/`.
+- At most 64 patterns per repository, each up to 128 characters, with no control characters.
+- A pattern made only of `*` is refused, because it would exempt everything; switch the policy off instead.
+- Patterns are trimmed, deduplicated and sorted when stored.
 
-Exclusions do not make npm or PyPI prereleases mutable by default.
+Exclusions only apply while the policy is on.
 
-## OCI tag immutability
+## Not in the first release
 
-With the policy on, a tag that is not excluded is protected:
+These parts of the design come in later releases. Until then, the behaviour on the [Release Immutability](/docs/advanced/release-immutability#known-gaps) page applies:
 
-- pushing a different manifest to an existing tag is refused; re-pushing the same digest succeeds and changes nothing;
-- deleting a protected tag is refused;
-- deleting a manifest by digest is refused while any protected tag points at it. Other, unprotected tags on the same digest stay deletable.
+- **Native format uploads, promotion and migration** consulting the policy, so it holds on every path that writes to the repository.
+- **Deletes.** One delete check for the REST API and the format-native deletes (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove), so a protected path cannot be deleted without an override.
+- **OCI tag immutability.** Pushing a different manifest to a protected tag is refused, re-pushing the same digest succeeds, and a protected tag cannot be deleted. Moving tags such as `latest` can be excluded, and cosign `.sig` and `.att` tags and OCI referrers stay mutable.
+- **Conan** revision files under the policy.
+- **Administrator override.** An explicit, per-request override with a required reason, held by the repository `admin` action or a system administrator, recorded in the audit log and sent as a webhook. To withdraw a release without changing its bytes, see the planned [Release Blocklist](/docs/advanced/release-blocklist).
+- **Lifecycle and retention.** Retention skips protected paths, and a dry run lists what it skipped.
+- **Replication.** The policy replicates to peers, and a peer's refusal is final.
 
-Exclude moving tags such as `latest` or `main` with a pattern if your pipelines rely on them.
+## How this is tested
 
-## Administrator override
+The backend tests for the policy are in `backend/src/services/release_immutability.rs` and `backend/src/api/handlers/immutability_policy_api_tests.rs`:
 
-A repository administrator or a system administrator can override the policy for a single request, for example to retract a release that must not stay published. The override:
+| Guarantee | Backend test |
+|-----------|--------------|
+| Default `off`, settings stored and read back | `default_policy_is_off_and_protects_nothing`, `store_load_and_is_protected_round_trip_db` |
+| Fields round-trip through create, get, update and list, and appear in the OpenAPI spec | `policy_round_trips_through_create_get_update_and_list_db`, `test_repository_release_immutability_fields_in_spec` (`openapi.rs`) |
+| A version-less path refuses different bytes only when the policy is on; identical bytes allowed | `versionless_generic_swap_is_refused_only_when_on_db` |
+| Exclusions match any segment, case-sensitively, and keep the path replaceable | `exclusions_match_any_segment`, `exclusions_are_case_sensitive`, `excluded_segment_stays_replaceable_when_on_db` |
+| Invalid patterns are refused | `normalize_rejects_bad_patterns`, `normalize_trims_dedupes_and_sorts` |
+| Maven release files protected, snapshots and index files not | `maven_release_file_is_protected_and_snapshot_is_not_db`, `npm_packument_stays_replaceable_when_on_db`, `mutable_index_files_stay_exempt` |
+| npm and PyPI prereleases protected by default | `npm_and_pypi_prereleases_are_protected_by_default` |
+| Remote and virtual repositories accept only the defaults; virtual writes use the member's policy | `remote_and_virtual_repositories_are_never_protected`, `requested_policy_on_proxying_types_accepts_only_defaults`, `virtual_deploy_target_carries_the_member_policy_db` |
+| Cannot be combined with versioning | `requested_policy_refuses_versioning_combination`, `policy_wins_over_versioning_db` |
+| A refused policy leaves no repository behind | `refused_policies_leave_no_repository_behind_db` |
+| Loosening needs repository admin and is audited | `loosening_is_switching_off_or_adding_an_exclusion`, `loosening_needs_repository_admin_and_is_audited_db` |
 
-- must be requested explicitly on the request;
-- requires a reason;
-- is recorded as an audit event and sent as a webhook.
-
-To stop a release from being downloaded without changing its bytes, block it instead of overriding: see [Release Blocklist](/docs/advanced/release-blocklist).
-
-## Lifecycle and retention
-
-Immutability takes precedence over lifecycle policies. Retention skips protected releases, and a dry run lists the protected releases it skipped.
+No release-gate test covers the policy yet.
 
 ## See Also
 
 - [Release Immutability](/docs/advanced/release-immutability): the rules enforced today
-- [Release Blocklist](/docs/advanced/release-blocklist): revoke a release without changing it
+- [Release Blocklist (Planned)](/docs/advanced/release-blocklist): revoke a release without changing it
+- [Artifact Versioning](/docs/advanced/versioning)
 - [Lifecycle Policies](/docs/advanced/lifecycle)
