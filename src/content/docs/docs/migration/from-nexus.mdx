@@ -332,7 +332,7 @@ If no repositories are returned, the credentials may lack the `nx-repository-vie
 Nexus throttles API responses under heavy load. Reduce `concurrent_transfers` if you see timeouts, or increase `throttle_delay_ms` to be gentler on the Nexus server.
 
 **Checksum mismatch**:
-Re-check the artifact on the Nexus side. If the source artifact is corrupted, skip it with `conflict_resolution: "skip"` or disable checksum verification:
+Re-check the artifact on the Nexus side. `conflict_resolution` does not skip a corrupted source artifact (it only decides what happens when the target already holds one; see [Conflict Resolution](#conflict-resolution)). To import it anyway, disable checksum verification:
 ```json
 { "config": { "verify_checksums": false } }
 ```
