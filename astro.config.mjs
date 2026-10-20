@@ -109,6 +109,8 @@ export default defineConfig({
             { label: 'WASM Plugins', slug: 'docs/advanced/plugins' },
             { label: 'Artifact Versioning', slug: 'docs/advanced/versioning' },
             { label: 'Release Immutability', slug: 'docs/advanced/release-immutability' },
+            { label: 'Immutability Policy (Planned)', slug: 'docs/advanced/immutability-policy' },
+            { label: 'Release Blocklist (Planned)', slug: 'docs/advanced/release-blocklist' },
             { label: 'Lifecycle Policies', slug: 'docs/advanced/lifecycle' },
             { label: 'Image Builder', slug: 'docs/advanced/image-builder' },
             { label: 'Webhooks', items: [

@@ -1,0 +1,67 @@
+---
+title: "Release Blocklist (Planned)"
+description: "Planned release blocklist: block a release without deleting it, the incident runbook, and what later releases add (digest blocks, index exclusion, yank)"
+---
+
+:::caution[Planned feature]
+This page describes a feature that is being designed and is not in any release yet. Endpoints, fields, status codes and response bodies are proposals and will change before release. For what the server enforces today, see [Release Immutability](/docs/advanced/release-immutability).
+:::
+
+A release cannot be changed once published (see [Release Immutability](/docs/advanced/release-immutability) and the planned [Immutability Policy](/docs/advanced/immutability-policy)). The blocklist is how you revoke one: a blocked release keeps its bytes and its coordinate for investigation, but the server stops serving it. Because a block never deletes anything, it never reopens the coordinate for different bytes.
+
+A block is separate from [quarantine](/docs/security/scanning). Quarantine holds a single file while it is scanned, and a later scan can release it. A block covers every file of a version, and nothing but an explicit unblock lifts it.
+
+## Block a release
+
+Blocking a release blocks every file of that version in the repository. Proposed endpoints:
+
+```bash
+# Block a release (reason required)
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "CVE-2026-12345: credential leak in 1.4.2"}' \
+  https://registry.example.com/api/v1/repositories/{key}/releases/{coordinate}/block
+
+# Lift the block (reason required)
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "investigation closed; fixed build published as 1.4.3"}' \
+  https://registry.example.com/api/v1/repositories/{key}/releases/{coordinate}/unblock
+```
+
+Blocking and unblocking need the repository `admin` action or a system administrator, and a reason. Both are recorded in the audit log and sent as webhooks. Each block records the repository, the coordinate, the reason, who placed it and when.
+
+While a release is blocked:
+
+- downloading any of its files is refused with **403** (the status is still a proposal). Authenticated callers get the block reason; anonymous callers get a plain 403 with no reason, the same rule that applies to other download refusals;
+- a re-scan, a quarantine release and a restore from the trash do not lift the block; only an unblock does;
+- deleting it needs the planned [administrator override](/docs/advanced/immutability-policy#not-in-the-first-release).
+
+## Incident runbook
+
+When a published release has to be withdrawn:
+
+1. **Block it.** Block the release in the repository it was published to, with a reason that names the incident. Clients stop receiving it at once, and the bytes stay in place for investigation.
+2. **Publish a fixed version** under a new version number. The blocked version number stays burned: it cannot be reused for different bytes.
+3. **Check the [audit log](/docs/security/audit-log)** for the block event and for downloads of the release before the block.
+4. **Decide whether to keep the block.** Leave it in place, or lift it with an unblock once the incident is closed.
+
+## Not in the first release
+
+These parts of the design come in later releases:
+
+- **Block a digest everywhere.** A digest block refuses one piece of content wherever it appears: on download from hosted, remote (proxy cache) and virtual repositories, as the source of a promotion, copy or migration, and on every replication peer, whatever the peer's own policy. Use it when the same content may sit in other repositories or remote caches.
+- **Leave blocked releases out of indexes.** A blocked release disappears from format indexes and version resolution (npm packument, PyPI simple index, Maven metadata, Helm index, OCI tag list), so clients do not resolve to it in the first place.
+- **Yank.** A softer block: a yanked release is hidden from "latest" and from version-range resolution, but a client that pins the exact version can still download it. Where the format has a native signal, the server emits it, such as the PEP 592 `data-yanked` attribute for PyPI and `yanked: true` for Cargo. A yank can be turned into a full block later without losing its history.
+
+## How this is tested
+
+No backend or release-gate test exists yet. This section will link each guarantee to the test that enforces it once the feature is built.
+
+## See Also
+
+- [Release Immutability](/docs/advanced/release-immutability): the rules enforced today
+- [Immutability Policy (Planned)](/docs/advanced/immutability-policy)
+- [Security Scanning](/docs/security/scanning): quarantine and scan-based download gates
