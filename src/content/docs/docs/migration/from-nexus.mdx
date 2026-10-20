@@ -203,12 +203,12 @@ For large Nexus instances, you may want to increase `concurrent_transfers` and d
 
 ### Conflict Resolution
 
-- `skip` (default) leaves an existing artifact in place when its checksum matches the source. If the source declares no checksum, an artifact at the same path counts as a match. An existing artifact whose checksum **differs** from the source is not skipped: the source copy replaces it.
-- `overwrite` re-imports every artifact and replaces the existing one at the same path.
-
-The [release-immutability rules](/docs/advanced/release-immutability) are not applied to migration writes, so under either mode a migration can replace a released version in the target repository. Migrate into empty repositories, or into ones whose contents you are prepared to have replaced by the source.
+- `skip` (default) leaves an existing artifact in place when its checksum matches the source. If the source declares no checksum, an artifact at the same path counts as a match. An existing artifact whose checksum **differs** from the source is not skipped: the source copy replaces it, unless it is a released version (see below).
+- `overwrite` re-imports every artifact and replaces the existing one at the same path, unless it is a released version.
 - `rename` is accepted but currently behaves like `overwrite`; it does not write a renamed copy.
 - Any other value, including `fail`, is treated as `skip`. There is no mode that stops the job on a conflict.
+
+Under every mode, a migration never replaces the bytes of a released version in the target repository (an artifact that carries a version, or a release file of its format), whether it is live, in the trash, or already reclaimed by storage garbage collection. The item is reported as `skipped`, with an error message that starts `Release immutability conflict at <path>`, and the job carries on. List those items with `GET /api/v1/migrations/$JOB_ID/items?status=skipped`. Re-migrating identical bytes, and replacing an artifact without a version, work as before. OCI images are not covered yet. See [Release Immutability](/docs/advanced/release-immutability#4-promotion-and-migration-do-not-replace-a-release). *(Changed after v1.11.3: earlier releases replace released versions too.)*
 
 ### Renaming Repositories During Import
 

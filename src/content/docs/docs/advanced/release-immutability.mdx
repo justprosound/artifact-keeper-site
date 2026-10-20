@@ -1,27 +1,61 @@
 ---
 title: "Release Immutability"
-description: "Which uploads, re-uploads and deletes Artifact Keeper refuses today, and where released content can still change"
+description: "Which uploads, re-uploads, deletes, promotions and migrations Artifact Keeper refuses, the IMMUTABLE_RELEASE error code, and where released content can still change"
 ---
 
-Artifact Keeper refuses to replace a stored release with different bytes on its main upload paths. The rules below are always on: there is no repository setting or environment variable that turns them on or off. This page describes what the server does today, including the paths where the rules do not apply yet.
+Artifact Keeper refuses to replace a stored release with different bytes on its main write paths. The rules below are always on: there is no repository setting or environment variable that turns them on or off. This page describes what the server does, including the paths where the rules do not apply yet.
+
+:::caution[Changed after v1.11.3]
+This page describes the server after the release-immutability fixes that follow v1.11.3. On v1.11.3 and earlier:
+
+- a refusal answers `409` with the code `CONFLICT`, or with a plain-text body on most native format APIs, instead of [`IMMUTABLE_RELEASE`](#the-immutable_release-error-code);
+- once storage garbage collection reclaims a deleted release, its coordinate accepts any bytes;
+- promotion, approval and migration can replace the bytes of a released version without the checks below;
+- `?permanent=true` on delete is ignored.
+:::
+
+## The `IMMUTABLE_RELEASE` error code
+
+Every refusal on this page answers **HTTP 409** with the stable error code `IMMUTABLE_RELEASE`. Match on the code, not on the message text: messages differ between formats and may be reworded.
+
+On the REST API and on the native API of every format except the three below, the body is the standard error object:
+
+```json
+{"code": "IMMUTABLE_RELEASE", "message": "Artifact version already exists and is immutable"}
+```
+
+Cargo, Dart pub and Swift clients parse their own error envelope, so the code is carried inside it:
+
+| Format | Code at | Message at |
+|--------|---------|------------|
+| Cargo | `errors[0].code` | `errors[0].detail` |
+| Dart pub | `error.code` | `error.message` |
+| Swift (`application/problem+json`) | `code` | `detail` |
+
+Other 409 responses keep the code `CONFLICT` and are not immutability refusals: a download of an artifact held in quarantine, `?permanent=true` on an OCI repository, a repository key that is already taken, and so on.
+
+:::note[Clients that matched `CONFLICT`]
+A client or script that detected an already-published version by matching `code == "CONFLICT"` must also accept `IMMUTABLE_RELEASE`. Checking the status alone (`409`) still works, but cannot tell a refusal from a quarantine hold.
+:::
 
 ## The rules
 
 ### 1. A stored path cannot be uploaded again
 
-Uploading to a path that already holds a live artifact returns **HTTP 409 Conflict** and keeps the stored file. This holds even when the new bytes are identical. Each format words the response its own way, for example:
+Uploading to a path that already holds a live artifact returns `409 IMMUTABLE_RELEASE` and keeps the stored file. This holds even when the new bytes are identical. The message depends on the format, for example:
 
-| Format | Response to a second upload of the same path |
-|--------|----------------------------------------------|
-| Generic (`PUT /api/v1/repositories/{key}/artifacts/{path}`) | `409`, `{"code": "CONFLICT", "message": "Artifact version already exists and is immutable"}` |
-| Maven release (any file outside a `-SNAPSHOT` directory, except `maven-metadata.xml`) | `409`, `Artifact already exists` |
-| Debian, RPM, Alpine package files | `409`, `Package already exists` |
+| Format | Message on a second upload of the same path |
+|--------|---------------------------------------------|
+| Generic (`PUT /api/v1/repositories/{key}/artifacts/{path}`, including chunked uploads) | `Artifact version already exists and is immutable` |
+| Maven release (any file outside a `-SNAPSHOT` directory, except `maven-metadata.xml`) | `Artifact already exists` |
+| npm | `Version 1.2.3 of my-lib already exists` |
+| Debian, RPM, Alpine package files | `Package already exists` |
 
 The exceptions are files a format rewrites in place by design. They are listed under [What stays mutable](#what-stays-mutable).
 
 ### 2. A deleted release cannot be replaced with different bytes
 
-Deleting an artifact leaves a tombstone (it moves to the trash). While the tombstone exists, uploading **different** bytes to a *released* coordinate returns `409` with `Artifact version already exists and is immutable`. Uploading the **identical** bytes again is allowed and restores the artifact.
+Deleting an artifact leaves a tombstone (it moves to the trash). Uploading **different** bytes to a *released* coordinate after a delete returns `409 IMMUTABLE_RELEASE` with `Artifact version already exists and is immutable`. Uploading the **identical** bytes again is allowed and restores the artifact.
 
 A coordinate counts as released when either of these holds:
 
@@ -30,18 +64,50 @@ A coordinate counts as released when either of these holds:
 
 A generic path with fewer than three segments has no version, so after a delete it can be uploaded again with different bytes.
 
-This check runs on the generic upload API (single request, multipart and chunked) and on the native uploads for Maven, npm, PyPI, NuGet, Cargo, Composer, conda and Bazel. Other formats do not run it yet; see [Known gaps](#known-gaps).
+This check runs on:
 
-The tombstone does not last forever. Once storage garbage collection reclaims it, the coordinate can be uploaded again with any bytes:
+- the generic upload API (single request, multipart and chunked);
+- the native uploads for Maven, npm, PyPI, NuGet, Cargo, Composer, conda and Bazel;
+- promotion, bulk promotion and approval into the repository, and migration imports (see [rule 4](#4-promotion-and-migration-do-not-replace-a-release)).
 
-- the trash keeps a deleted artifact for `GC_TRASH_RETENTION_DAYS` (default `0`: reclaimable on the next GC pass, which runs hourly by default; see [Environment Variables](/docs/reference/environment#scheduled-tasks));
-- an administrator can delete with `DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true`, which purges the tombstone at once so the path can be reused. This is not available for OCI repositories. *(Added after v1.11.3; on v1.11.3 and earlier the query parameter is ignored and the tombstone stays.)*
+Native uploads for the other formats do not run it yet; see [Known gaps](#known-gaps).
+
+#### After storage garbage collection
+
+Storage garbage collection permanently removes a deleted artifact from the trash once `GC_TRASH_RETENTION_DAYS` has passed (see [Environment Variables](/docs/reference/environment#scheduled-tasks)). When it reclaims a deleted artifact, it keeps a small record of the path, its version and its SHA-256 digest, but not the bytes. The record is kept for as long as the repository exists.
+
+Rule 2 keeps applying after garbage collection: different bytes at a reclaimed released coordinate are refused for every caller, administrators included, and identical bytes are still accepted.
+
+Coordinates that garbage collection reclaimed before the server was upgraded to a version with this record have no record, so they accept any bytes.
+
+#### Reopening a coordinate on purpose
+
+An administrator can reopen a deleted release for different bytes, but only **before** storage garbage collection reclaims it. Either of these removes the tombstone, and any record, at once:
+
+- `DELETE /api/v1/repositories/{key}/artifacts/{path}?permanent=true`, which deletes and purges in one request (not available for OCI repositories);
+- `DELETE /api/v1/admin/trash/{id}` for an artifact that is already in the trash (`GET /api/v1/admin/trash` lists it).
+
+After garbage collection has reclaimed the coordinate, there is no way to reopen it.
+
+:::caution[The window can be short]
+With the defaults (`GC_TRASH_RETENTION_DAYS=0` and an hourly `GC_SCHEDULE`), a deleted artifact is reclaimable on the next garbage collection pass, so an administrator may have less than an hour to permanently delete a release before its coordinate is closed for good. Set `GC_TRASH_RETENTION_DAYS` to the number of days your administrators need.
+:::
 
 ### 3. A release file can only be deleted by an administrator
 
-`DELETE /api/v1/repositories/{key}/artifacts/{path}` returns `409` with `Cannot delete an immutable/released artifact` when the caller is not an administrator and the path is a release file of its format: for example a Maven release artifact, a PyPI wheel or sdist, an npm tarball, a Cargo `.crate`, a conda package, a Debian `pool/` file, an RPM package, or an OCI blob or manifest addressed by digest. Trusted replication peers (an administrator or service-account token) are exempt so that upstream deletes can be mirrored.
+`DELETE /api/v1/repositories/{key}/artifacts/{path}` returns `409 IMMUTABLE_RELEASE` with `Cannot delete an immutable/released artifact` when the caller is not an administrator and the path is a release file of its format: for example a Maven release artifact, a PyPI wheel or sdist, an npm tarball, a Cargo `.crate`, a conda package, a Debian `pool/` file, an RPM package, or an OCI blob or manifest addressed by digest. Trusted replication peers (an administrator or service-account token) are exempt so that upstream deletes can be mirrored.
 
 Generic, NuGet, Helm and Composer paths are not release files in this sense, so anyone with the `delete` permission on the repository can delete them. Rule 2 still stops a deleted generic artifact whose path carries a version from being replaced with different bytes.
+
+### 4. Promotion and migration do not replace a release
+
+Rule 2 also applies when content arrives in a repository by [promotion](/docs/advanced/staging-promotion) or by migration. Identical bytes are accepted in both cases.
+
+- **Single promotion** onto a released coordinate in the trash, with different bytes, returns `409 IMMUTABLE_RELEASE`. Nothing is copied, and the deleted artifact and its bytes stay in the trash.
+- **Bulk promotion** reports the item as failed (`"promoted": false`, with a `message` that names the immutability refusal) and continues with the rest of the batch.
+- **Approve and execute** returns `409 IMMUTABLE_RELEASE` and the approval stays `pending`.
+- Each promotion refusal is recorded in the audit log as `PROMOTION_REFUSED`.
+- **Migration** never replaces the bytes of a released artifact in the target repository, whatever its `conflict_resolution`, whether the artifact is live, in the trash, or already reclaimed by garbage collection. The item is reported as `skipped`, with a reason that starts `Release immutability conflict at <path>`, and the job carries on. See [Conflict Resolution](/docs/migration/from-nexus#conflict-resolution).
 
 ## What stays mutable
 
@@ -55,29 +121,36 @@ These are rewritten in place by design and are not covered by the rules above:
 
 ## Known gaps
 
-The rules are enforced on the paths named above. These paths can still change released content today:
+The rules are enforced on the paths named above. These paths can still change released content:
 
-- **Migration** with `conflict_resolution: "overwrite"` (or `"rename"`, which currently behaves the same way) replaces existing artifacts in the target repository without the checks above. See [Migrating from Nexus](/docs/migration/from-nexus#configuration-options).
-- **Promotion and approval** clear a tombstone at the target path without checking that the bytes match.
 - **Native uploads for the other formats** (among them Debian, RPM, Alpine, Helm, Go, Terraform and Swift) clear a tombstone before storing the new file without rule 2, so a deleted artifact can be re-uploaded with different bytes. Rule 1 still refuses an upload while the file is stored.
+- **Promotion onto a coordinate that garbage collection has already reclaimed** is not checked against the garbage collection record; promotion checks only a deleted artifact that is still in the trash.
+- **Migration of OCI images** (manifests and tags) does not apply rule 2.
 - **Format-native deletes** (OCI manifest delete, npm unpublish, Helm chart delete, Conan remove) do not apply rule 3.
 
 ## How this is tested
 
-Each rule is pinned by database-backed tests in the backend repository, which run in its CI:
+Each guarantee is pinned by tests in the [backend repository](https://github.com/artifact-keeper/artifact-keeper), most of them database-backed, which run in its CI. Test names are in code; the link goes to the file that holds them.
 
-| Rule | Backend test |
-|------|--------------|
-| Generic re-upload refused, and different bytes after a delete refused | `versioning_flag_off_keeps_release_immutability_db`, `delete_then_reupload_different_bytes_blocked_db` (`backend/src/services/artifact_service.rs`, `backend/src/api/handlers/repositories.rs`) |
-| Identical bytes after a delete allowed; mutable index files replaceable | `delete_then_reupload_legit_flows_allowed_db`, `checked_cleanup_allows_identical_bytes_republish`, `checked_cleanup_allows_mutable_path_swap` |
-| Version-less generic path replaceable after a delete | `github_shaped_generic_tombstone_allows_replacement` (`backend/src/api/handlers/mod.rs`) |
-| Admin `?permanent=true` frees the path | `permanent_delete_allows_reupload_of_different_bytes_db` |
-| Chunked upload refuses an occupied path | `complete_refuses_to_overwrite_an_occupied_immutable_path`, `complete_refuses_an_identical_republish_of_an_occupied_path` (`backend/src/api/handlers/upload.rs`) |
-| Maven release redeploy refused, snapshots republishable | `test_maven_put_takes_snapshot_mutability_from_classifier_3839`, `test_maven_redeploy_of_a_unique_snapshot_artifact_is_accepted_4476` (`backend/src/api/handlers/maven.rs`) |
-| Release-file delete is admin-only | `test_delete_blocked_by_immutability_matches_classification` |
-| OCI tag moves on re-push | `digest_pull_and_delete_survive_tag_overwrite` (`backend/src/api/handlers/oci_v2.rs`) |
+| Guarantee | Backend test |
+|-----------|--------------|
+| A refusal answers `409` with `IMMUTABLE_RELEASE`, distinct from `CONFLICT` | `test_immutable_is_409_with_its_own_code_and_passes_through`, `test_immutable_renders_the_stable_code_in_the_body` ([`error.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/error.rs)) |
+| Cargo, pub and Swift carry the code inside their envelopes | `every_format_envelope_carries_the_stable_code` ([`handlers/mod.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/mod.rs)); `test_republish_of_a_live_version_is_immutable_release_5`, `test_republish_over_a_tombstone_is_immutable_release_5` ([`cargo.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/cargo.rs)) |
+| The OpenAPI spec names the code on the upload, delete and chunked-completion 409s | `test_openapi_immutability_409s_name_the_stable_code` ([`openapi.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/openapi.rs)) |
+| Generic re-upload of a stored path refused | `test_reupload_rejected_as_immutable_keeps_stored_checksums` ([`search_checksum_sha1_md5_tests.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/tests/search_checksum_sha1_md5_tests.rs)); `versioning_flag_off_keeps_release_immutability_db` ([`artifact_service.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/services/artifact_service.rs)) |
+| Chunked upload refuses an occupied path, with the code | `complete_refuses_to_overwrite_an_occupied_immutable_path`, `complete_refuses_an_identical_republish_of_an_occupied_path` ([`upload.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/upload.rs)) |
+| Different bytes after a delete refused; identical bytes and mutable index files allowed | `delete_then_reupload_different_bytes_blocked_db`, `delete_then_reupload_legit_flows_allowed_db` ([`repositories.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/repositories.rs)); `checked_cleanup_blocks_immutable_swap_different_bytes`, `checked_cleanup_allows_identical_bytes_republish`, `checked_cleanup_allows_mutable_path_swap` ([`handlers/mod.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/mod.rs)) |
+| Version-less generic path replaceable after a delete | `github_shaped_generic_tombstone_allows_replacement` ([`handlers/mod.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/mod.rs)) |
+| Different bytes still refused after garbage collection | `gc_reclaimed_release_tombstone_still_refuses_different_bytes_db` ([`storage_gc.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/storage_gc.rs)); `checked_cleanup_refuses_swap_at_a_gc_reclaimed_release` ([`handlers/mod.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/mod.rs)); `released_coordinate_record_keeps_releases_and_upgrades_blobs` ([`storage_gc_service.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/services/storage_gc_service.rs)) |
+| An administrator's permanent delete reopens the path | `permanent_delete_allows_reupload_of_different_bytes_db` ([`repositories.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/repositories.rs)); `purge_drops_the_released_coordinate_record` ([`trash_service.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/services/trash_service.rs)) |
+| Maven release redeploy refused, snapshots republishable | `test_maven_put_takes_snapshot_mutability_from_classifier_3839`, `test_maven_redeploy_of_a_unique_snapshot_artifact_is_accepted_4476` ([`maven.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/maven.rs)) |
+| Release-file delete is admin-only | `test_delete_blocked_by_immutability_matches_classification` ([`repositories.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/repositories.rs)) |
+| Promotion refuses different bytes over a deleted release; identical bytes allowed | `test_single_promote_different_bytes_over_release_tombstone_blocked`, `test_bulk_promote_different_bytes_over_release_tombstone_blocked`, `test_single_promote_identical_bytes_over_release_tombstone_allowed` ([`promotion.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/promotion.rs)) |
+| Approve and execute refuses, and the approval stays pending | `test_approval_different_bytes_over_release_tombstone_blocked` ([`approval.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/approval.rs)) |
+| Migration skips a released artifact with different bytes; identical bytes and unreleased paths behave as before | `test_migration_skip_different_bytes_over_live_release_is_conflict`, `test_migration_overwrite_different_bytes_over_live_release_is_conflict`, `test_migration_overwrite_different_bytes_over_release_tombstone_is_conflict`, `test_migration_same_bytes_over_release_completes`, `test_migration_overwrite_replaces_unreleased_row` ([`migration_worker.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/services/migration_worker.rs)) |
+| OCI tag moves on re-push | `digest_pull_and_delete_survive_tag_overwrite` ([`oci_v2.rs`](https://github.com/artifact-keeper/artifact-keeper/blob/main/backend/src/api/handlers/oci_v2.rs)) |
 
-The end-to-end release gate does not yet assert any of these rules against a deployed server; its Debian, RPM and Alpine scripts accept a `409` on re-upload but do not require one.
+The end-to-end release gate does not yet assert any of these rules against a deployed server. Its Debian, RPM and Alpine scripts accept a `409` on re-upload but do not require one.
 
 ## See Also
 

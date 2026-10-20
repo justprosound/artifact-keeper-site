@@ -200,6 +200,7 @@ The promotion handler enforces:
 2. **Target must be a local repository** -- you can only promote into release repos
 3. **Format must match** -- a Maven staging repo can only promote to a Maven release repo
 4. **Authentication required** -- all promotion endpoints require a valid token
+5. **A deleted release is not replaced** -- if the target path held a released version that was deleted and is still in the trash, promoting different bytes onto it is refused with `409 IMMUTABLE_RELEASE` (a failed item in a bulk promotion; the approval stays `pending` for approve-and-execute) and audited as `PROMOTION_REFUSED`. Promoting the identical bytes is allowed. See [Release Immutability](/docs/advanced/release-immutability#4-promotion-and-migration-do-not-replace-a-release). *(Changed after v1.11.3.)*
 
 ## Typical Workflow
 

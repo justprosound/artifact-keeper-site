@@ -160,8 +160,8 @@ mvn dependency:get \
 ### Release Repositories
 
 - Release versions (1.0.0, 2.1.3, etc.)
-- Redeploying a file that is already stored returns **HTTP 409** (`Artifact already exists`), even with identical bytes, so `mvn deploy` of an already-released version fails. Only `maven-metadata.xml` and its checksums are rewritten
-- Only an administrator can delete a release file. After a delete, deploying **different** bytes to the same path returns 409 until the deleted file is purged from the trash; redeploying the identical bytes is allowed. See [Release Immutability](/docs/advanced/release-immutability)
+- Redeploying a file that is already stored returns **HTTP 409** with the code `IMMUTABLE_RELEASE` (`Artifact already exists`), even with identical bytes, so `mvn deploy` of an already-released version fails. Only `maven-metadata.xml` and its checksums are rewritten
+- Only an administrator can delete a release file. After a delete, deploying **different** bytes to the same path returns 409, also after storage garbage collection has reclaimed the deleted file; redeploying the identical bytes is allowed. Only an administrator's permanent delete, before garbage collection, frees the path. *(Changed after v1.11.3: earlier releases answer with the code `CONFLICT`, and garbage collection frees the path.)* See [Release Immutability](/docs/advanced/release-immutability)
 - Used for stable, production-ready artifacts
 - URL: `http://localhost:8080/maven/releases`
 
